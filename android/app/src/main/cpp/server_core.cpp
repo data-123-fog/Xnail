@@ -1,145 +1,114 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <vector>
-#include <map>
-#include <sstream>
-#include <cstring>
-#include <cstdint>
 #include <thread>
-#include <mutex>
+#include <chrono>
+#include <cstring>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
-using namespace std;
+static char response_buffer[4096];
 
-// Буфер для безопасного возврата строк в Dart/Flutter через FFI
-static char response_buffer[2048];
-mutex server_mutex;
-
-// ==========================================
-// 1. КРИПТОГРАФИЯ (Шифрование по User ID)
-// ==========================================
-string xor_cipher(const string& input, int32_t user_id) {
-    string output = input;
-    int mask = (user_id * 7 + 13) % 256; // Уникальная маска пользователя
+// Вспомогательная функция шифрования XOR
+std::string xor_cipher(const std::string& input, int32_t key) {
+    std::string output = input;
+    char k = static_cast<char>(key & 0xFF);
     for (size_t i = 0; i < input.size(); ++i) {
-        output[i] = input[i] ^ mask;
+        output[i] = input[i] ^ (k + (i % 7));
     }
     return output;
 }
 
-// ==========================================
-// 2. УПРАВЛЕНИЕ ЯЧЕЙКАМИ И ПАПКАМИ
-// ==========================================
-void create_directory(const string& path) {
-    mkdir(path.c_str(), 0777);
-}
-
-void init_cell_folders(const string& cell_name) {
-    create_directory("./server_cells");
-    string cell_path = "./server_cells/" + cell_name;
-    create_directory(cell_path);
-    create_directory(cell_path + "/logs");
-    create_directory(cell_path + "/data");
-}
-
-// ==========================================
-// 3. БЫСТРЫЙ ИНДЕКСАТОР И ПОИСК
-// ==========================================
-void save_and_index_log(const string& cell_name, int32_t user_id, const string& raw_text) {
-    lock_guard<mutex> lock(server_mutex);
-    init_cell_folders(cell_name);
-
-    // Генерируем имя файла лога
-    string log_id = "log_" + to_string(time(nullptr)) + ".txt";
-    string log_path = "./server_cells/" + cell_name + "/logs/" + log_id;
-    string index_path = "./server_cells/" + cell_name + "/logs/index.txt";
-
-    // 1. Сохраняем зашифрованное содержимое в файл
-    string encrypted_content = xor_cipher(raw_text, user_id);
-    ofstream log_file(log_path);
-    log_file << encrypted_content;
-    log_file.close();
-
-    // 2. Индексируем каждое слово из оригинального текста
-    stringstream ss(raw_text);
-    string word;
-    ofstream index_file(index_path, ios::app);
-    while (ss >> word) {
-        // Приводим слово к нижнему регистру
-        for (auto &c : word) c = tolower(c);
-        // Записываем связку: [слово-триггер] -> [имя_файла_лога] -> [user_id]
-        index_file << word << " " << log_id << " " << user_id << "\n";
+// Создание директорий для ячеек
+void create_directories(const std::string& path) {
+    std::string current = "";
+    for (char ch : path) {
+        current += ch;
+        if (ch == '/') {
+            mkdir(current.c_str(), 0777);
+        }
     }
-    index_file.close();
+    mkdir(current.c_str(), 0777);
 }
 
-// ==========================================
-// 4. API ДЛЯ FLUTTER (FFI EXPORTS)
-// ==========================================
+// Сохранение и индексация лога
+void save_and_index_log(const std::string& cell_name, int32_t user_id, const std::string& message_text) {
+    std::string base_dir = "./server_cells/" + cell_name + "/logs/";
+    create_directories(base_dir);
+
+    auto now = std::chrono::system_clock::now().time_since_epoch();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    std::string log_id = "log_" + std::to_string(ms) + ".txt";
+
+    std::string encrypted_text = xor_cipher(message_text, user_id);
+
+    std::ofstream log_file(base_dir + log_id);
+    if (log_file.is_open()) {
+        log_file << encrypted_text;
+        log_file.close();
+    }
+
+    std::ofstream index_file(base_dir + "index.txt", std::ios::app);
+    if (index_file.is_open()) {
+        index_file << log_id << "|" << user_id << "|" << message_text << "\n";
+        index_file.close();
+    }
+}
+
 extern "C" {
 
-    // Инициализация структуры ячейки из Flutter
-    int32_t init_cell(const char* cell_name) {
-        init_cell_folders(string(cell_name));
-        return 1;
-    }
-
-    // Мгновенный поиск файла лога по ключевому слову-триггеру
-    const char* search_log_trigger(const char* cell_name, const char* trigger) {
-        lock_guard<mutex> lock(server_mutex);
-        string index_path = "./server_cells/" + string(cell_name) + "/logs/index.txt";
-        ifstream index_file(index_path);
-
+    const char* find_log_by_trigger(const char* cell_name, int32_t user_id, const char* trigger_word) {
+        std::string base_dir = "./server_cells/" + std::string(cell_name) + "/logs/";
+        std::ifstream index_file(base_dir + "index.txt");
         if (!index_file.is_open()) {
-            strncpy(response_buffer, "Индекс пуст или не найден.", sizeof(response_buffer));
+            std::strncpy(response_buffer, "Индексный файл не найден.", sizeof(response_buffer));
             return response_buffer;
         }
 
-        string search_word = string(trigger);
-        for (auto &c : search_word) c = tolower(c);
+        std::string line;
+        std::string search_word = std::string(trigger_word);
 
-        string word, log_id;
-        int32_t user_id;
-        while (index_file >> word >> log_id >> user_id) {
-            if (word == search_word) {
-                // Нашли связку! Открываем сам лог и расшифровываем его обратно
-                string log_path = "./server_cells/" + string(cell_name) + "/logs/" + log_id;
-                ifstream log_file(log_path);
-                string encrypted_content((istreambuf_iterator<char>(log_file)), istreambuf_iterator<char>());
+        while (std::getline(index_file, line)) {
+            size_t p1 = line.find('|');
+            size_t p2 = line.find('|', p1 + 1);
+            if (p1 == std::string::npos || p2 == std::string::npos) continue;
+
+            std::string log_id = line.substr(0, p1);
+            int32_t uid = std::stoi(line.substr(p1 + 1, p2 - p1 - 1));
+            std::string text = line.substr(p2 + 1);
+
+            if (uid == user_id && text.find(search_word) != std::string::npos) {
+                std::string log_path = base_dir + log_id;
+                std::ifstream log_file(log_path);
+                std::string encrypted_content((std::istreambuf_iterator<char>(log_file)), std::istreambuf_iterator<char>());
                 log_file.close();
 
-                string decrypted = xor_cipher(encrypted_content, user_id);
-                string result = "[Индекс: " + log_id + " | UserID: " + to_string(user_id) + "]\n" + decrypted;
-                
-                strncpy(response_buffer, result.c_str(), sizeof(response_buffer));
+                std::string decrypted = xor_cipher(encrypted_content, user_id);
+                std::string result = "[Индекс: " + log_id + " | UserID: " + std::to_string(user_id) + "]\n" + decrypted;
+
+                std::strncpy(response_buffer, result.c_str(), sizeof(response_buffer));
                 return response_buffer;
             }
         }
 
-        strncpy(response_buffer, "Лог с таким триггером не найден.", sizeof(response_buffer));
+        std::strncpy(response_buffer, "Лог с таким триггером не найден.", sizeof(response_buffer));
         return response_buffer;
     }
 
-    // Обработка входящего сообщения (Запись + Индексация + Шифрование)
     const char* process_incoming_message(const char* cell_name, int32_t user_id, const char* message_text) {
-        save_and_index_log(string(cell_name), user_id, string(message_text));
-        string res = "Успешно зашифровано и сохранено в ячейку '" + string(cell_name) + "'";
-        strncpy(response_buffer, res.c_str(), sizeof(response_buffer));
+        save_and_index_log(std::string(cell_name), user_id, std::string(message_text));
+        std::string res = "Успешно зашифровано и сохранено в ячейку '" + std::string(cell_name) + "'";
+        std::strncpy(response_buffer, res.c_str(), sizeof(response_buffer));
         return response_buffer;
     }
 
-    // ==========================================
-    // 5. БЫСТРЫЙ СЕТЕВОЙ СОКЕТ (СЕРВЕР)
-    // ==========================================
     int32_t start_server_socket(int32_t port, const char* cell_name) {
-        string cell = string(cell_name);
-        
-        // Запускаем слушатель сети в отдельном потоке, чтобы интерфейс не зависал
-        thread([port, cell]() {
+        std::string cell = std::string(cell_name);
+
+        std::thread([port, cell]() {
             int server_fd = socket(AF_INET, SOCK_STREAM, 0);
             if (server_fd < 0) return;
 
@@ -151,33 +120,42 @@ extern "C" {
             address.sin_addr.s_addr = INADDR_ANY;
             address.sin_port = htons(port);
 
-            if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) return;
-            if (listen(server_fd, 5) < 0) return;
+            // Вызываем C-функцию bind из глобального пространства имён
+            if (::bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+                close(server_fd);
+                return;
+            }
+
+            if (listen(server_fd, 5) < 0) {
+                close(server_fd);
+                return;
+            }
 
             while (true) {
                 int new_socket = accept(server_fd, nullptr, nullptr);
                 if (new_socket < 0) continue;
 
                 char buffer[1024] = {0};
-                read(new_socket, buffer, 1024);
+                read(new_socket, buffer, sizeof(buffer) - 1);
 
-                // Формат входящего сетевого пакета: "USER_ID:ТЕКСТ"
-                string raw_msg(buffer);
+                std::string raw_msg(buffer);
                 size_t delim = raw_msg.find(':');
-                if (delim != string::npos) {
-                    int32_t uid = stoi(raw_msg.substr(0, delim));
-                    string text = raw_msg.substr(delim + 1);
-                    
-                    save_and_index_log(cell, uid, text);
+                if (delim != std::string::npos) {
+                    try {
+                        int32_t uid = std::stoi(raw_msg.substr(0, delim));
+                        std::string text = raw_msg.substr(delim + 1);
 
-                    string ack = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nOK";
-                    send(new_socket, ack.c_str(), ack.size(), 0);
+                        save_and_index_log(cell, uid, text);
+
+                        std::string ack = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nOK";
+                        send(new_socket, ack.c_str(), ack.size(), 0);
+                    } catch (...) {}
                 }
                 close(new_socket);
             }
         }).detach();
 
-        return 1; // Сервер успешно запущен
+        return 1;
     }
 }
 
