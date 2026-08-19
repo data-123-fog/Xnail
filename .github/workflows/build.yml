@@ -18,11 +18,11 @@ jobs:
         channel: 'stable'
 
     - name: Get dependencies
-      working-directory: ./Xnail
+      working-directory: Xnail
       run: flutter pub get
 
     - name: Build APK
-      working-directory: ./Xnail
+      working-directory: Xnail
       run: flutter build apk --release
 
     - name: Upload APK
