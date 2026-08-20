@@ -1,0 +1,16 @@
+*.class
+*.log
+*.lock
+*.swp
+*.swo
+*~
+.DS_Store
+local.properties
+.gradle/
+build/
+.idea/
+*.iml
+*.apk
+*.ap_
+*.dex
+*.so

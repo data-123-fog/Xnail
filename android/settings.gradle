@@ -24,17 +24,3 @@ plugins {
 }
 
 include ":app"
-
-def localPropertiesFile = new File(rootDir, "local.properties")
-def properties = new Properties()
-
-if (localPropertiesFile.exists()) {
-    localPropertiesFile.withInputStream { stream ->
-        properties.load(stream)
-    }
-}
-
-def flutterRoot = properties.getProperty("flutter.sdk")
-if (flutterRoot == null) {
-    throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
-}
