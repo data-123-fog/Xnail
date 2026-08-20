@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'ffi_bridge.dart'; // Наш мост к C++ ядру
+import 'ffi_bridge.dart';
 
 void main() {
   runApp(const CyberServerApp());
@@ -14,9 +14,9 @@ class CyberServerApp extends StatelessWidget {
       title: 'Xnail Server',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0F172A), // Тёмный фон
+        scaffoldBackgroundColor: const Color(0xFF0F172A),
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF06B6D4), // Неоновый циан
+          primary: Color(0xFF06B6D4),
           surface: Color(0xFF1E293B),
         ),
       ),
@@ -45,11 +45,16 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
 
   void _startServer() {
     int port = int.tryParse(_portController.text) ?? 8080;
-    int res = startServerSocket(port, _cellController.text);
-    if (res == 1) {
+    try {
+      int res = startServerSocket(port, _cellController.text);
       setState(() {
         _isServerRunning = true;
-        _statusText = "Сервер запущен на порту $port [Ячейка: ${_cellController.text}]";
+        _statusText = "Сервер запущен (код: $res) на порту $port [Ячейка: ${_cellController.text}]";
+        _logOutput = "C++ Сокет успешно запущен на порту $port";
+      });
+    } catch (e) {
+      setState(() {
+        _logOutput = "Ошибка C++ ядра: $e";
       });
     }
   }
@@ -58,22 +63,32 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
     if (_msgController.text.isEmpty) return;
     int uid = int.tryParse(_userIdController.text) ?? 1;
     
-    // Вызов C++ ядра через FFI
-    String res = processIncomingMessage(_cellController.text, uid, _msgController.text);
-    setState(() {
-      _logOutput = res;
-      _msgController.clear();
-    });
+    try {
+      String res = processIncomingMessage(_cellController.text, uid, _msgController.text);
+      setState(() {
+        _logOutput = "Записано в C++ ячейку:\n$res";
+        _msgController.clear();
+      });
+    } catch (e) {
+      setState(() {
+        _logOutput = "Ошибка шифрования: $e";
+      });
+    }
   }
 
   void _searchTrigger() {
     if (_searchController.text.isEmpty) return;
     
-    // Поиск лога в C++ хэш-индексе за 0.001 секунды
-    String res = searchLogTrigger(_cellController.text, _searchController.text);
-    setState(() {
-      _logOutput = res;
-    });
+    try {
+      String res = searchLogTrigger(_cellController.text, _searchController.text);
+      setState(() {
+        _logOutput = "Результат поиска:\n$res";
+      });
+    } catch (e) {
+      setState(() {
+        _logOutput = "Ошибка поиска: $e";
+      });
+    }
   }
 
   @override
@@ -90,7 +105,6 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Блок статуса и запуска сервера
             Card(
               color: const Color(0xFF1E293B),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -131,6 +145,7 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _isServerRunning ? Colors.grey : const Color(0xFF06B6D4),
+                        foregroundColor: Colors.white,
                         minimumSize: const Size.fromHeight(45),
                       ),
                       onPressed: _isServerRunning ? null : _startServer,
@@ -144,7 +159,6 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
 
             const SizedBox(height: 16),
 
-            // Блок отправки и шифрования данных
             Card(
               color: const Color(0xFF1E293B),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -167,7 +181,11 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
                     ),
                     const SizedBox(height: 10),
                     ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981), minimumSize: const Size.fromHeight(45)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(45),
+                      ),
                       onPressed: _sendAndEncrypt,
                       child: const Text("Зашифровать и записать в ячейку"),
                     ),
@@ -178,14 +196,13 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
 
             const SizedBox(height: 16),
 
-            // Поиск по индексу-триггеру
             Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _searchController,
                     decoration: const InputDecoration(
-                      hintText: "Поисковый триггер (напр. 'жопа')",
+                      hintText: "Поисковый триггер",
                       filled: true,
                       fillColor: Color(0xFF1E293B),
                       border: OutlineInputBorder(),
@@ -194,7 +211,10 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
                 ),
                 const SizedBox(width: 8),
                 IconButton.filled(
-                  style: IconButton.styleFrom(backgroundColor: const Color(0xFF06B6D4)),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFF06B6D4),
+                    foregroundColor: Colors.white,
+                  ),
                   icon: const Icon(Icons.search),
                   onPressed: _searchTrigger,
                 )
@@ -203,7 +223,6 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
 
             const SizedBox(height: 16),
 
-            // Терминал вывода логов
             Container(
               padding: const EdgeInsets.all(12),
               height: 180,
@@ -225,4 +244,3 @@ class _ServerHomeScreenState extends State<ServerHomeScreen> {
     );
   }
 }
-
